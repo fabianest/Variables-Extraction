@@ -1,0 +1,89 @@
+import netCDF4 as nc
+import numpy as np
+import pandas as pd
+import glob
+import os
+from datetime import datetime, timedelta
+
+# Coordinates of the meteorological station
+station_lat = 4.8123  # Guaymaral latitude
+station_lon = -74.0649  # Guaymaral longitude
+
+# Path to the directory containing WRF output files
+wrf_dir = 'd04/'
+
+# Pattern to match WRF output files in the specified directory
+wrf_files = glob.glob(os.path.join(wrf_dir, 'wrfout_d04_*'))
+
+# Initialize a list to store the data
+data_list = []
+
+# Function to decode WRF time strings to datetime objects
+def decode_times(times_var):
+    times_str = [''.join([t.decode('utf-8') for t in time]) for time in times_var]
+    times = [datetime.strptime(t, '%Y-%m-%d_%H:%M:%S') for t in times_str]
+    return times
+
+# Function to find the closest grid point to the station
+def find_closest_grid_point(latitudes, longitudes, station_lat, station_lon):
+    dist = np.sqrt((latitudes - station_lat)**2 + (longitudes - station_lon)**2)
+    min_index = np.unravel_index(np.argmin(dist), dist.shape)
+    return min_index
+
+# Loop through each file
+for wrf_file in wrf_files:
+    # Open the WRF output file
+    dataset = nc.Dataset(wrf_file)
+
+    # List all variable names to verify they exist
+    print(f"Processing file: {wrf_file}")
+    print("Variables:", dataset.variables.keys())
+
+    # Extract time information from 'Times' variable
+    if 'Times' in dataset.variables:
+        times_var = dataset.variables['Times'][:]
+        times = decode_times(times_var)
+    else:
+        raise AttributeError("'Times' variable not found in the NetCDF file.")
+
+    # Extract latitude and longitude
+    latitudes = dataset.variables['XLAT'][0, :, :]
+    longitudes = dataset.variables['XLONG'][0, :, :]
+
+    # Find the closest grid point to the station
+    closest_grid_point = find_closest_grid_point(latitudes, longitudes, station_lat, station_lon)
+    i, j = closest_grid_point
+
+    # Extract 2-meter temperature (T2) at the closest grid point
+    t2_kelvin = dataset.variables['T2'][:, i, j]
+    t2_celsius = t2_kelvin - 273.15
+
+    # Extract 10-meter U and V wind components at the closest grid point
+    u10 = dataset.variables['U10'][:, i, j]
+    v10 = dataset.variables['V10'][:, i, j]
+
+    # Calculate wind speed
+    wind_speed = np.sqrt(u10**2 + v10**2)
+
+    # Calculate wind direction
+    wind_direction = np.arctan2(v10, u10) * (180 / np.pi)  # Convert from radians to degrees
+    wind_direction = (wind_direction + 360) % 360  # Ensure the direction is between 0 and 360 degrees
+
+    # Close the dataset
+    dataset.close()
+
+    # Loop through each time step and extract data at hourly intervals
+    for k, time in enumerate(times):
+        if time.minute == 0:  # Select data at the start of each hour
+            data_list.append([time, t2_celsius[k], wind_speed[k], wind_direction[k]])
+
+# Create a DataFrame from the data list
+df = pd.DataFrame(data_list, columns=['Time', 'Temperature (°C)', 'Wind Speed (m/s)', 'Wind Direction (°)'])
+
+# Save the DataFrame to a CSV file
+output_dir = 'output/'
+os.makedirs(output_dir, exist_ok=True)  # Create the directory if it doesn't exist
+output_file = os.path.join(output_dir, 'wrf_output_data.csv')
+df.to_csv(output_file, index=False)
+
+print(f"Data successfully saved to {output_file}")
