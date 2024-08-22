@@ -1,0 +1,119 @@
+import os
+import numpy as np
+import pandas as pd
+from netCDF4 import Dataset
+from math import radians, cos, sin, sqrt, atan2
+from pathlib import Path
+from datetime import datetime, timedelta
+
+# Location of the meteorological station
+station_lat = 11.014929  # Latitude of Barranquilla
+station_lon = -74.807448  # Longitude of Barranquilla
+
+# Function to calculate the Euclidean distance between two points (lat, lon)
+def calculate_distance(lat1, lon1, lat2, lon2):
+    R = 6371.0  # Earth radius in kilometers
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat / 2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    distance = R * c
+    return distance
+
+# Function to decode WRF time strings to datetime objects
+def decode_times(times_var):
+    times_str = [''.join([t.decode('utf-8') for t in time]) for time in times_var]
+    times = [datetime.strptime(t, '%Y-%m-%d_%H:%M:%S') for t in times_str]
+    return times
+
+# Directory containing WRF output files
+input_dir = Path(r'C:/Users/Estrada/Desktop/Barranquilla/WRF_Barranquilla_1')
+output_csv = 'barranquilla1wrf.csv'
+
+# Initialize lists to store extracted data
+data_list = []
+
+# Read the first file to get the latitude and longitude arrays
+first_file = input_dir / 'wrfout_d04_2019-01-07_00%3A00%3A00'
+
+print(f"Attempting to open the first file: {first_file}")
+
+try:
+    nc = Dataset(first_file, mode='r')
+    lats = nc.variables['XLAT'][0, :, :]
+    lons = nc.variables['XLONG'][0, :, :]
+    nc.close()
+except Exception as e:
+    print(f"Error reading {first_file}: {e}")
+    raise
+
+# Print the boundaries
+print("Latitude boundaries: ", np.min(lats), np.max(lats))
+print("Longitude boundaries: ", np.min(lons), np.max(lons))
+
+# Find the closest grid point
+min_distance = float('inf')
+min_i, min_j = -1, -1
+
+for i in range(lats.shape[0]):
+    for j in range(lons.shape[1]):
+        distance = calculate_distance(station_lat, station_lon, lats[i, j], lons[i, j])
+        if distance < min_distance:
+            min_distance = distance
+            min_i, min_j = i, j
+
+print(f"Closest grid point: (i={min_i}, j={min_j}) with distance {min_distance} km")
+
+# Extract data from all WRF output files
+for filename in os.listdir(input_dir):
+    if filename.startswith('wrfout_d04_') and '%3A' in filename:
+        file_path = input_dir / filename
+        print(f"Processing file: {file_path}")
+        try:
+            dataset = Dataset(file_path, mode='r')
+
+            # Extract time information from 'Times' variable
+            if 'Times' in dataset.variables:
+                times_var = dataset.variables['Times'][:]
+                times = decode_times(times_var)
+            else:
+                raise AttributeError("'Times' variable not found in the NetCDF file.")
+
+            # Extract 2-meter temperature (T2) at the closest grid point
+            t2_kelvin = dataset.variables['T2'][:, min_i, min_j]
+            t2_celsius = t2_kelvin - 273.15
+
+            # Extract 10-meter U and V wind components at the closest grid point
+            u10 = dataset.variables['U10'][:, min_i, min_j]
+            v10 = dataset.variables['V10'][:, min_i, min_j]
+
+            # Calculate wind speed
+            wind_speed = np.sqrt(u10**2 + v10**2)
+
+            # Calculate wind direction
+            wind_direction = np.arctan2(v10, u10) * (180 / np.pi)  # Convert from radians to degrees
+            wind_direction = (wind_direction + 360) % 360  # Ensure the direction is between 0 and 360 degrees
+
+            # Append data to the list
+            for k, time in enumerate(times):
+                data_list.append([time, t2_celsius[k], wind_speed[k], wind_direction[k]])
+
+            dataset.close()
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
+
+# Create a DataFrame from the data list
+df = pd.DataFrame(data_list, columns=['Time', 'Temperature (C)', 'Wind Speed (m/s)', 'Wind Direction (degrees)'])
+
+# Convert 'Time' column to datetime
+df['Time'] = pd.to_datetime(df['Time'])
+
+# Ensure 'Time' column is the index for resampling
+df.set_index('Time', inplace=True)
+
+# Interpolation to get hourly data
+df = df.resample('H').interpolate(method='time')
+
+# Save the DataFrame to a CSV file
+df.to_csv(output_csv)
+print(f"Data successfully extracted to {output_csv}")
