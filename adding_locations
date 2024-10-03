@@ -1,0 +1,12 @@
+import pandas as pd
+
+# Load the data
+df = pd.read_csv('medellin2_wrf_fda_updated.csv')
+
+# Create 'Location' column (from 1 to 684 for each hour)
+df['Location'] = (df.index % 684) + 1
+
+# Save the updated CSV with the new 'Location' column
+df.to_csv('medellin2_wrf_fda_updated_with_location.csv', index=False)
+
+print("Updated CSV with 'Location' column saved.")
