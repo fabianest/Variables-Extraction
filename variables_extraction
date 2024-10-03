@@ -1,0 +1,71 @@
+import os
+import netCDF4 as nc
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from tqdm import tqdm
+from datetime import datetime, timedelta
+
+# Directory where the .nc files are stored
+nc_directory = Path(r'C:\Users\Estrada\Desktop\Medellin_2\Medellin2WRF')  # Change this to your actual directory
+output_file = 'medellin2_wrf_fda.csv'  # Where you want to save the extracted data
+
+# Variables to extract
+variables = ['T2', 'U10', 'V10']  # Temperature, U-wind, V-wind
+latitude = 'XLAT'  # Latitude variable in WRF files
+longitude = 'XLONG'  # Longitude variable in WRF files
+time_var = 'Times'  # Time variable in WRF files
+
+# Function to calculate wind speed and direction
+def calculate_wind_speed_direction(u, v):
+    wspd = np.sqrt(u**2 + v**2)  # Wind speed
+    wdir = (np.arctan2(u, v) * (180 / np.pi) + 180) % 360  # Wind direction
+    return wspd, wdir
+
+# Function to decode WRF time strings to datetime objects
+def decode_time(times):
+    str_time = ''.join([t.decode('utf-8') for t in times])
+    time_obj = datetime.strptime(str_time, '%Y-%m-%d_%H:%M:%S')
+    return time_obj
+
+# Initialize lists to store the extracted data
+data_list = []
+
+# Loop through all files that start with 'wrfout_d04_'
+nc_files = sorted([f for f in os.listdir(nc_directory) if f.startswith('wrfout_d04_')])
+
+print(f"Found {len(nc_files)} WRF output files: {nc_files}")
+
+for nc_file in tqdm(nc_files):
+    # Open the NetCDF file
+    dataset = nc.Dataset(os.path.join(nc_directory, nc_file))
+    
+    # Extract latitude, longitude, and time
+    lats = dataset.variables[latitude][:]
+    lons = dataset.variables[longitude][:]
+    times = dataset.variables[time_var][:]
+    
+    # Loop over the grid points and extract the necessary variables
+    for t in range(len(times)):
+        time_obj = decode_time(times[t])
+        
+        for i in range(lats.shape[0]):
+            for j in range(lons.shape[1]):
+                temp = dataset.variables['T2'][t, i, j] - 273.15  # Convert Temperature from K to °C
+                u10 = dataset.variables['U10'][t, i, j]  # U-component of wind at 10m
+                v10 = dataset.variables['V10'][t, i, j]  # V-component of wind at 10m
+                
+                # Calculate wind speed and direction
+                wspd, wdir = calculate_wind_speed_direction(u10, v10)
+                
+                # Append the extracted data to the list
+                data_list.append([time_obj, lats[i, j], lons[i, j], temp, wspd, wdir])
+
+    # Close the NetCDF file
+    dataset.close()
+
+# Convert the list to a DataFrame
+df = pd.DataFrame(data_list, columns=['Time', 'Latitude', 'Longitude', 'Temperature', 'WindSpeed', 'WindDirection'])
+
+# Save the DataFrame to a CSV file
+df.to_csv(output_file, index=False)
